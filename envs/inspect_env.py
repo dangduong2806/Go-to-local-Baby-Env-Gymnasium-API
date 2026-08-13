@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from make_env import ENV_ID, make_env
+from .make_env import ENV_ID, make_env
 
 FIXED_SEED = 42
 NUM_RANDOM_STEPS = 10
@@ -58,10 +58,10 @@ def print_initial_observation(env: Any, obs: dict[str, Any]):
     print(f"image dtype: {image.dtype}")
     print(f"minimum pixel value: {np.min(image)}")
     print(f"maximum pixel value: {np.max(image)}")
-    print(f"mission: {obs["mission"]}")
+    print(f"mission: {obs['mission']}")
 
     if "direction" in obs:
-        print(f"direction: {obs["direction"]}")
+        print(f"direction: {obs['direction']}")
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -119,8 +119,8 @@ def main():
             print(f"selected action name: {action_name}")
             print(f"reward: {reward}")
             print(f"terminated: {terminated}")
-            print(f"current mission: {obs["mission"]}")
-            print(f"new image shape: {obs["image"].shape}")
+            print(f"current mission: {obs['mission']}")
+            print(f"new image shape: {obs['image'].shape}")
 
             if "direction" in obs:
                 print(f'new direction: {obs["direction"]}')
