@@ -1,6 +1,6 @@
 # BabyAI environment
 from typing import Optional
-import gymnasim as gym
+import gymnasium as gym
 from .wrappers import use_rgb_partial_observation
 
 ENV_ID = "BabyAI-GoToLocal-v0"
