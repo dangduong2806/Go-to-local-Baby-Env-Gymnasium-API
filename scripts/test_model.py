@@ -1,0 +1,2 @@
+"""Model smoke test."""
+
