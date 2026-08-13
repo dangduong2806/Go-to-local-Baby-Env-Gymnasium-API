@@ -1,2 +1,5 @@
-"""Training entry point for the VLN PPO proof of concept."""
+from training.train_ppo import main
 
+
+if __name__ == "__main__":
+    main()

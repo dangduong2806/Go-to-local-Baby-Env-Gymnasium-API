@@ -1,1 +1,6 @@
-
+gymnasium
+imageio
+imageio-ffmpeg
+minigrid
+numpy
+torch
