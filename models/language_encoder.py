@@ -68,18 +68,16 @@ class BabyAITokenizer:
             token_ids:
                 Long tensor with shape ``(batch, maximum_length)``.
 
-            lengths:
-                Long tensor containing each unpadded sequence length.
+            attention_mask:
+                Long tensor with shape ``(batch, maximum_length)``.
+                Real tokens are 1 and padding tokens are 0.
         """
         encoded = [self.encode(mission=mission) for mission in missions]
 
-        lengths = torch.tensor(
-            [len(sequence) for sequence in encoded],
-            dtype=torch.long,
-            device=device,
-        )
+        if not encoded:
+            raise ValueError("At least one mission is required.")
 
-        maximum_length = int(lengths.max().item())
+        maximum_length = max(len(sequence) for sequence in encoded)
 
         token_ids = torch.full(
             (len(encoded), maximum_length),
@@ -88,14 +86,24 @@ class BabyAITokenizer:
             device=device,
         )
 
+        attention_mask = torch.zeros(
+            (len(encoded), maximum_length),
+            dtype=torch.long,
+            device=device,
+        )
+
         for row, sequence in enumerate(encoded):
-            token_ids[row, : len(sequence)] = torch.tensor(
+            sequence_length = len(sequence)
+
+            token_ids[row, :sequence_length] = torch.tensor(
                 sequence,
                 dtype=torch.long,
                 device=device,
             )
 
-        return token_ids, lengths
+            attention_mask[row, :sequence_length] = 1
+
+        return token_ids, attention_mask
 
 class LanguageEncoder(nn.Module):
     """Encode BabyAI mission strings using an embedding layer and GRU."""
@@ -123,19 +131,32 @@ class LanguageEncoder(nn.Module):
     def forward(
             self,
             token_ids: torch.Tensor,
-            lengths: torch.Tensor
+            attention_mask: torch.Tensor
     ):
         """Encode padded token sequences.
         Args:
             token_ids:
                 Tensor with shape ``(batch, sequence_length)``.
 
-            lengths:
-                Original, unpadded sequence lengths.
+            attention_mask:
+                Tensor with the same shape as ``token_ids``. Real tokens
+                are 1 and padding tokens are 0.
 
         Returns:
             Tensor with shape ``(batch, hidden_dim)``.
         """
+        if attention_mask.shape != token_ids.shape:
+            raise ValueError(
+                "attention_mask must have the same shape as token_ids."
+            )
+
+        lengths = attention_mask.sum(dim=1).to(dtype=torch.long)
+
+        if torch.any(lengths <= 0):
+            raise ValueError(
+                "Every instruction must contain at least one token."
+            )
+        
         embedded_words = self.word_embedding(token_ids)
         # Packing prevents padding tokens from influencing the final GRU state.
         packed_words = pack_padded_sequence(

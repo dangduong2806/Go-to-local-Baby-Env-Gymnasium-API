@@ -70,6 +70,10 @@ def main():
 
         number_of_actions = env.action_space.n 
         model = ActorCritic(number_of_actions=number_of_actions)
+        token_ids, attention_mask = model.tokenizer.encode_batch(
+            missions=[mission],
+            device=image_1.device,
+        )
 
         print("Model")
         print("-----")
@@ -91,12 +95,25 @@ def main():
         # Forward-pass shape
         logits, values = model(
             images=image_1,
-            missions=[mission],
+            token_ids=token_ids,
+            attention_mask=attention_mask,
             directions=direction_1,
         )
 
         probabilities = torch.softmax(logits, dim=-1)
         probability_sum = probabilities.sum(dim=-1)
+
+        action, log_prob, entropy, value = model.get_action_and_value(
+            images=image_1,
+            token_ids=token_ids,
+            attention_mask=attention_mask,
+            directions=direction_1,
+        )
+
+        print(f"sampled action: {action}")
+        print(f"log probability: {log_prob}")
+        print(f"entropy: {entropy}")
+        print(f"critic value: {value}")
 
         print("\nForward-pass inspection")
         print("-----------------------")
