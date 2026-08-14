@@ -1,12 +1,23 @@
-python train.py --num-updates 100 --rollout-steps 256
+# Stochastic sampling
+python train.py `
+  --num-updates 100 `
+  --rollout-steps 512 `
+  --validation-episodes 50 `
+  --validation-interval 10 `
+  --output-dir runs/ppo_gotolocal_validation
 
-Collect 256 transitions
-→ calculate GAE advantages and returns
-→ run PPO optimization
-→ repeat 100 times
-
+# Stochastic sampling
 python evaluate.py `
-  --checkpoint runs/ppo_gotolocal/checkpoint_best.pt `
-  --episodes 10 `
-  --video-dir runs/ppo_gotolocal/videos `
+  --checkpoint runs/ppo_gotolocal_validation/checkpoint_best.pt `
+  --episodes 100 `
+  --output runs/ppo_gotolocal_validation/evaluation_results.json `
+  --video-dir runs/ppo_gotolocal_3actions/videos `
   --video-episodes 3
+# Deterministic sampling
+python evaluate.py `
+  --checkpoint runs/ppo_gotolocal_3actions/checkpoint_best.pt `
+  --episodes 100 `
+  --deterministic `
+  --output runs/ppo_gotolocal_3actions/evaluation_deterministic.json
+
+This evaluates all 100 episodes, keeps the frames of the three best candidates

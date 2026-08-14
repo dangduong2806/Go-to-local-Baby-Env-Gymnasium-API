@@ -32,3 +32,54 @@ def use_rgb_partial_observation(
         performed here.
     """
     return RGBImgPartialObsWrapper(env, tile_size=tile_size)
+
+class NavigationOnlyActionWrapper(gym.ActionWrapper):
+    """Restrict MiniGrid to the three actions needed for basic VLN.
+
+    Exposed action space:
+
+        0 -> left
+        1 -> right
+        2 -> forward
+
+    MiniGrid uses these same IDs internally, so the mapping is currently
+    identity. Keeping an explicit map makes the restriction clear and avoids
+    accidentally allowing pickup, drop, toggle, or done.
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+
+        self._action_map = (
+            0,  # left
+            1,  # right
+            2,  # forward
+        )
+
+        self.action_space = gym.spaces.Discrete(
+            len(self._action_map)
+        )
+
+    def action(self, action):
+        """Convert the restricted action into a MiniGrid action ID."""
+        restricted_action = int(action)
+
+        if not self.action_space.contains(restricted_action):
+            raise ValueError(
+                f"Invalid navigation action {restricted_action}. "
+                "Expected 0=left, 1=right, or 2=forward."
+            )
+
+        return self._action_map[restricted_action]
+
+    def reverse_action(self, action):
+        """Convert a MiniGrid action ID back into the restricted ID."""
+        action_id = int(action)
+
+        try:
+            return self._action_map.index(action_id)
+        except ValueError as error:
+            raise ValueError(
+                f"MiniGrid action {action_id} is not part of the "
+                "navigation-only action space."
+            ) from error

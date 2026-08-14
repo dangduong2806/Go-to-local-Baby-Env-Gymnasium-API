@@ -19,7 +19,13 @@ import torch
 
 from algorithms.gae import compute_gae
 from algorithms.ppo import PPOTrainer
-from algorithms.rollout import CollectorState, collect_rollout
+
+from algorithms.rollout import (
+    CollectorState,
+    collect_rollout,
+    observation_to_tensors,
+)
+
 from envs.make_env import make_env
 from models.actor_critic import ActorCritic
 
@@ -39,6 +45,24 @@ def parse_args():
         default="runs/ppo_gotolocal",
     )
     parser.add_argument("--debug", action="store_true")
+
+    # Evaluate 50 fixed validation episodes.
+    parser.add_argument(
+        "--validation-episodes",
+        type=int,
+        default=50,
+    )
+    # Validate every 10 PPO updates.
+    parser.add_argument(
+        "--validation-interval",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "--validation-seed",
+        type=int,
+        default=20_000,
+    )
 
     return parser.parse_args()
 
@@ -135,9 +159,122 @@ def print_debug_information(
     print(f"advantages: {advantages[:5]}")
     print(f"returns: {returns[:5]}")
 
+def validate_policy(
+    model,
+    env,
+    number_of_episodes,
+    base_seed,
+    device,
+):
+    """Evaluate the updated model on a fixed stochastic validation set.
+    Validation samples from the same categorical policy used during PPO
+    rollout collection. Fixed environment and PyTorch seeds make comparisons
+    between checkpoints reproducible.
+    """
+    # Save PPO's random state so validation sampling does not affect future
+    # rollout actions or minibatch shuffling.
+    cpu_rng_state = torch.get_rng_state()
+
+    cuda_rng_states = (
+        torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available()
+        else None
+    )
+
+    was_training = model.training
+    model.eval()
+
+    episode_returns = []
+    episode_lengths = []
+    episode_successes = []
+
+    try:
+        with torch.no_grad():
+            for episode in range(number_of_episodes):
+                episode_seed = base_seed + episode
+                observation, _ = env.reset(seed=episode_seed)
+
+                # Each checkpoint receives the same environment and action-sampling seeds.
+                torch.manual_seed(episode_seed)
+
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(episode_seed)
+
+                terminated = False
+                truncated = False
+                episode_return = 0.0
+                episode_length = 0
+
+                while not terminated and not truncated:
+                    (
+                        image,
+                        token_ids,
+                        attention_mask,
+                        direction,
+                    ) = observation_to_tensors(
+                        observation=observation,
+                        tokenizer=model.tokenizer,
+                        device=device,
+                    )
+
+                    logits, _ = model(
+                        images=image,
+                        token_ids=token_ids,
+                        attention_mask=attention_mask,
+                        directions=direction,
+                    )
+
+                    # Match the default deterministic behavior in evaluate.py.
+                    distribution = torch.distributions.Categorical(
+                        logits=logits
+                    )
+                    action = distribution.sample()
+
+                    (
+                        observation,
+                        reward,
+                        terminated,
+                        truncated,
+                        _,
+                    ) = env.step(int(action.item()))
+
+                    episode_return += float(reward)
+                    episode_length += 1
+
+                episode_returns.append(episode_return)
+                episode_lengths.append(episode_length)
+                episode_successes.append(
+                    float(episode_return > 0.0)
+                )
+
+    finally:
+        if was_training:
+            model.train()
+
+        # Restore PPO's RNG state so validation does not alter training.
+        torch.set_rng_state(cpu_rng_state)
+
+        if cuda_rng_states is not None:
+            torch.cuda.set_rng_state_all(cuda_rng_states)
+
+    return {
+        "mean_return": safe_mean(episode_returns),
+        "mean_length": safe_mean(episode_lengths),
+        "success_rate": safe_mean(episode_successes),
+    }
 
 def main():
     args = parse_args()
+
+    if args.validation_episodes <= 0:
+        raise ValueError(
+            "--validation-episodes must be greater than zero."
+        )
+
+    if args.validation_interval <= 0:
+        raise ValueError(
+            "--validation-interval must be greater than zero."
+        )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,14 +286,28 @@ def main():
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
+    # Training env
     env = make_env(
         render_mode=None,
         rgb_partial_obs=True,
+        navigation_actions_only=True,
         seed=args.seed,
+    )
+
+    # Validation env
+    # Keep validation separate so its resets do not affect training environment
+    # state or episode collection.
+    validation_env = make_env(
+        render_mode=None,
+        rgb_partial_obs=True,
+        navigation_actions_only=True,
+        seed=args.validation_seed,
     )
 
     env.action_space.seed(args.seed)
 
+    # env.action_space.n == 3
+    # logits.shape == [B, 3]
     model = ActorCritic(
         number_of_actions=env.action_space.n,
     ).to(device)
@@ -174,14 +325,19 @@ def main():
         value_coef=0.5,
         entropy_coef=0.01,
         max_grad_norm=0.5,
-        update_epochs=4,
+        update_epochs=8, # increase from 4 to 8
         minibatch_size=64,
     )
 
     collector_state = CollectorState()
     environment_steps = 0
     history = []
-    best_score = (-1.0, float("-inf"))
+
+    best_score = (
+        -1.0,
+        float("-inf"),
+        float("-inf"),
+    )
 
     try:
         for update in range(1, args.num_updates + 1):
@@ -220,6 +376,7 @@ def main():
                     returns,
                 )
 
+            # The model is updated
             metrics = trainer.update(
                 rollout=rollout,
                 advantages=advantages,
@@ -237,6 +394,31 @@ def main():
                 episode_statistics.episode_successes
             )
 
+            validation_metrics = None
+
+            should_validate = (
+                update == 1
+                or update % args.validation_interval == 0
+                or update == args.num_updates
+            )
+
+            if should_validate:
+                validation_metrics = validate_policy(
+                    model=model,
+                    env=validation_env,
+                    number_of_episodes=args.validation_episodes,
+                    base_seed=args.validation_seed,
+                    device=device,
+                )
+
+                print(
+                    "validation "
+                    f"update={update} "
+                    f"return={validation_metrics['mean_return']:.4f} "
+                    f"length={validation_metrics['mean_length']:.2f} "
+                    f"success={validation_metrics['success_rate']:.2%}"
+                )
+
             record = {
                 "update": update,
                 "environment_steps": environment_steps,
@@ -251,6 +433,21 @@ def main():
                 "clip_fraction": metrics.clip_fraction,
                 "explained_variance": metrics.explained_variance,
                 "ratio_before_update": metrics.ratio_before_update,
+                "validation_mean_return": (
+                    validation_metrics["mean_return"]
+                    if validation_metrics is not None
+                    else None
+                ),
+                "validation_mean_length": (
+                    validation_metrics["mean_length"]
+                    if validation_metrics is not None
+                    else None
+                ),
+                "validation_success_rate": (
+                    validation_metrics["success_rate"]
+                    if validation_metrics is not None
+                    else None
+                ),
             }
             history.append(record)
 
@@ -270,19 +467,34 @@ def main():
                 args=args,
             )
 
-            # Prefer higher success rate, then higher mean return when two
-            # updates have the same success rate.
-            current_score = (success_rate, mean_return)
-            if current_score > best_score:
-                best_score = current_score
-                save_checkpoint(
-                    path=output_dir / "checkpoint_best.pt",
-                    model=model,
-                    optimizer=optimizer,
-                    update=update,
-                    environment_steps=environment_steps,
-                    args=args,
+            # Save best checkpoint
+            if validation_metrics is not None:
+                # Primary criterion: validation success rate.
+                # First tie-breaker: higher validation return.
+                # Second tie-breaker: shorter validation episodes.
+                current_score = (
+                    validation_metrics["success_rate"],
+                    validation_metrics["mean_return"],
+                    -validation_metrics["mean_length"],
                 )
+
+                if current_score > best_score:
+                    best_score = current_score
+
+                    save_checkpoint(
+                        path=output_dir / "checkpoint_best.pt",
+                        model=model,
+                        optimizer=optimizer,
+                        update=update,
+                        environment_steps=environment_steps,
+                        args=args,
+                    )
+
+                    print(
+                        f"new best checkpoint saved at update {update}: "
+                        f"validation success="
+                        f"{validation_metrics['success_rate']:.2%}"
+                    )
 
             print(
                 f"update={update:4d} "
@@ -316,6 +528,7 @@ def main():
 
     finally:
         env.close()
+        validation_env.close()
 
 
 if __name__ == "__main__":

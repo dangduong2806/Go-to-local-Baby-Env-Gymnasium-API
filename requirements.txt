@@ -3,4 +3,5 @@ imageio
 imageio-ffmpeg
 minigrid
 numpy
+pillow
 torch

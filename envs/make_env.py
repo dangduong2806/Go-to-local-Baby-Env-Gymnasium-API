@@ -1,13 +1,18 @@
 # BabyAI environment
 from typing import Optional
 import gymnasium as gym
-from .wrappers import use_rgb_partial_observation
+
+from .wrappers import (
+    NavigationOnlyActionWrapper,
+    use_rgb_partial_observation,
+)
 
 ENV_ID = "BabyAI-GoToLocal-v0"
 
 def make_env(
         render_mode: Optional[str] = None,
         rgb_partial_obs: bool = True,
+        navigation_actions_only: bool = False,
         seed: Optional[int] = None,
 ):
     # Create the BabyAI GoToLocal environment
@@ -24,6 +29,11 @@ def make_env(
         seed:
             Optional seed used for the environment's first reset. The action
             space is seeded as well so random action sampling is reproducible.
+        
+        navigation_actions_only:
+            If True, expose only left, right, and forward as Discrete(3).
+            The default False preserves MiniGrid's original Discrete(7)
+            action space for environment inspection.
 
     Returns:
         A standard Gymnasium environment.
@@ -51,10 +61,24 @@ def make_env(
         # an RGB rendering of the agent's partial field of view. It keeps the
         # dictionary structure, mission instruction, and direction value.
         env = use_rgb_partial_observation(env=env)
+
+    if navigation_actions_only:
+        # Basic GoToLocal navigation requires only turning left, turning right,
+        # and moving forward. Restricting the action space prevents PPO from
+        # wasting probability on pickup, drop, toggle, and done.
+        env = NavigationOnlyActionWrapper(env)
+
     if seed is not None:
-        # Gymnasium seeds environments through reset(), not through the old
-        # env.seed() API. The initial observation is intentionally discarded;
-        # callers should still call reset() before beginning their episode.
+        # Gymnasium seeds the environment through reset(seed=...), not through
+        # the deprecated env.seed(...) method.
+        #
+        # make_env returns only the environment, so this initial observation is
+        # intentionally discarded. A caller should still call env.reset() before
+        # beginning its episode.
+        env.reset(seed=seed)
+
+        # Environment seeding and action-space seeding are separate. This makes
+        # env.action_space.sample() reproducible as well.
         env.action_space.seed(seed)
 
     return env
