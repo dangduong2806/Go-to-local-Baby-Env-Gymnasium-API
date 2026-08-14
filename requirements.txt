@@ -5,3 +5,4 @@ minigrid
 numpy
 pillow
 torch
+matplotlib

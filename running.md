@@ -21,3 +21,10 @@ python evaluate.py `
   --output runs/ppo_gotolocal_3actions/evaluation_deterministic.json
 
 This evaluates all 100 episodes, keeps the frames of the three best candidates
+
+# Generate diagrams
+python -m scripts.plot_results `
+  --training-csv runs/ppo_gotolocal_3actions/training_metrics.csv `
+  --evaluation-json runs/ppo_gotolocal_3actions/evaluation_results.json `
+  --output-dir runs/ppo_gotolocal_3actions/plots `
+  --smooth-window 10
