@@ -20,6 +20,8 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+activate_env.ipynb
+
 
 # IDE and operating-system files
 .vscode/
@@ -37,4 +39,3 @@ runs/
 # Logs and temporary files
 *.log
 *.tmp
-
