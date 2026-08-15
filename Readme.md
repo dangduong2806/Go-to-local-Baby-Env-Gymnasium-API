@@ -302,7 +302,8 @@ python train.py `
 
 Evaluate the model:
 
-# Stochastic sampling
+Stochastic sampling
+```powershell
 python evaluate.py `
   --checkpoint runs/ppo_gotolocal_validation/checkpoint_best.pt `
   --episodes 100 `
