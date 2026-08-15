@@ -43,6 +43,7 @@ def main():
     env = make_env(
         render_mode=None,
         rgb_partial_obs=True,
+        navigation_actions_only=True,
         seed=SEED,
     )
 
