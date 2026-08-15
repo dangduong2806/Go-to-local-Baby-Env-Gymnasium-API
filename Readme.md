@@ -239,7 +239,7 @@ success rate is possible because the policy is stochastic and the two sets use
 different environment seeds. More training seeds and repeated evaluations would
 be needed for a stronger estimate of generalization performance.
 
-## Video demonstrations
+## Best Result Cases
 
 Evaluation records every episode temporarily and keeps the three episodes with
 the highest return. Each frame displays the mission, selected action, immediate
