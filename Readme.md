@@ -275,11 +275,11 @@ python evaluate.py `
   --video-episodes 3
 ```
 
-> **Publishing note:** the diagrams are stored in `images/plots`, and the
+<!-- > **Publishing note:** the diagrams are stored in `images/plots`, and the
 > animated GIF previews are stored in `docs/demos`, so both can be committed and
 > displayed in a remote repository. The original MP4 files remain under the
 > Git-ignored `runs/` directory and are available only in the current workspace
-> unless published separately.
+> unless published separately. -->
 
 ## Installation and usage
 
