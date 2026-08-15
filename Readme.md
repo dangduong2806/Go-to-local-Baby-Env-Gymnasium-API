@@ -300,9 +300,7 @@ python train.py `
   --output-dir runs/ppo_gotolocal_validation
 ```
 
-Evaluate the model:
-
-Stochastic sampling
+Evaluate the model (Stochastic sampling):
 ```powershell
 python evaluate.py `
   --checkpoint runs/ppo_gotolocal_validation/checkpoint_best.pt `
