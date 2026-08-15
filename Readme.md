@@ -135,7 +135,7 @@ L_{\mathrm{policy}}
 =-\mathbb{E}_t\left[
 \min\left(
 r_t(\theta)\hat A_t,
-\operatorname{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t
+\mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t
 \right)
 \right].
 $$
@@ -192,11 +192,11 @@ The following results come from the saved run in
 | Entropy | 1.08817 | 0.58224 |
 | Total loss | -0.02214 | -0.02736 |
 
-![PPO training losses](runs/ppo_gotolocal_validation/plots/training_losses.png)
+![PPO training losses](images/plots/training_losses.png)
 
-![Training and validation rewards](runs/ppo_gotolocal_validation/plots/training_rewards.png)
+![Training and validation rewards](images/plots/training_rewards.png)
 
-![Training and validation success rate](runs/ppo_gotolocal_validation/plots/training_success_rate.png)
+![Training and validation success rate](images/plots/training_success_rate.png)
 
 Actor and total losses are optimization objectives, not direct measures of task
 performance, so they are not expected to decrease monotonically. Rollout reward
@@ -230,9 +230,9 @@ success rate is the primary selection criterion.
 | Mean episode length | 45.05 |
 | Success rate | 47.00% |
 
-![Evaluation episode rewards](runs/ppo_gotolocal_validation/plots/evaluation_rewards.png)
+![Evaluation episode rewards](images/plots/evaluation_rewards.png)
 
-![Evaluation success rate](runs/ppo_gotolocal_validation/plots/evaluation_success_rate.png)
+![Evaluation success rate](images/plots/evaluation_success_rate.png)
 
 The difference between the 60% validation success rate and 47% evaluation
 success rate is possible because the policy is stochastic and the two sets use
@@ -275,10 +275,11 @@ python evaluate.py `
   --video-episodes 3
 ```
 
-> **Publishing note:** the animated GIF previews are stored in `docs/demos`, so
-> they can be committed and displayed in a remote repository. The original MP4
-> files and result plots remain under the Git-ignored `runs/` directory and are
-> available only in the current workspace unless published separately.
+> **Publishing note:** the diagrams are stored in `images/plots`, and the
+> animated GIF previews are stored in `docs/demos`, so both can be committed and
+> displayed in a remote repository. The original MP4 files remain under the
+> Git-ignored `runs/` directory and are available only in the current workspace
+> unless published separately.
 
 ## Installation and usage
 
