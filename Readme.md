@@ -300,6 +300,17 @@ python train.py `
   --output-dir runs/ppo_gotolocal_validation
 ```
 
+Evaluate the model:
+
+# Stochastic sampling
+python evaluate.py `
+  --checkpoint runs/ppo_gotolocal_validation/checkpoint_best.pt `
+  --episodes 100 `
+  --output runs/ppo_gotolocal_validation/evaluation_results.json `
+  --video-dir runs/ppo_gotolocal_3actions/videos `
+  --video-episodes 3
+```
+
 Generate the result diagrams:
 
 ```powershell
