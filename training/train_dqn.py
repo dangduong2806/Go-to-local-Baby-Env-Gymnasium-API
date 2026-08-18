@@ -1066,7 +1066,7 @@ def main():
                     save_checkpoint(
                         path=(
                             output_dir
-                            / "checkpoint_best_dqn.pt"
+                            / "checkpoint_best.pt"
                         ),
                         online_network=online_network,
                         target_network=target_network,
@@ -1216,7 +1216,7 @@ def main():
 
             if should_validate:
                 save_checkpoint(
-                    path=output_dir / "checkpoint_last_dqn.pt",
+                    path=output_dir / "checkpoint_last.pt",
                     online_network=online_network,
                     target_network=target_network,
                     optimizer=optimizer,
