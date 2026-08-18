@@ -1,9 +1,10 @@
-# Simplified Vision-Language Navigation with PPO
+# Simplified Vision-Language Navigation with Deep Q-Learning
 
 This project is a proof of concept for Vision-Language Navigation (VLN) in
 `BabyAI-GoToLocal-v0`. The agent receives a partial RGB view of its surroundings,
 a natural-language instruction such as `go to the red ball`, and its current
-direction. It must navigate to the requested object using only three actions:
+direction. It learns action values with Deep Q-Learning and must navigate to the
+requested object using only three actions:
 
 <p align="center">
   <img src="images/GoToLocal.gif" alt="Example of the BabyAI-GoToLocal-v0 environment" width="420">
@@ -17,14 +18,32 @@ direction. It must navigate to the requested object using only three actions:
 | 1 | `right` | Rotate right |
 | 2 | `forward` | Move one cell forward |
 
-Restricting the policy to navigation actions removes irrelevant MiniGrid actions
-such as pickup, drop, toggle, and done. Partial observability still makes the task
-challenging: the target or an obstacle may be outside the agent's current field
-of view, so an action must be chosen from incomplete visual information.
+Restricting the agent to navigation actions removes irrelevant MiniGrid actions
+such as pickup, drop, toggle, and done. Partial observability still makes the
+task challenging: the target or an obstacle may be outside the current field of
+view, so the agent must choose an action from incomplete visual information.
 
-## Actor-Critic model
+## Why Deep Q-Learning
 
-The model works in three simple stages. Read the diagram from left to right:
+Tabular Q-learning stores one value for every state-action pair. That is not
+practical here because a state contains an RGB image, a language instruction,
+and a direction. Exact observations rarely repeat, and a table cannot naturally
+generalize between visually or linguistically similar situations.
+
+Deep Q-Learning, commonly called DQN, keeps the Q-learning objective but replaces
+the table with a neural network:
+
+$$
+Q_\theta(\text{image},\text{mission},\text{direction},a).
+$$
+
+The network can learn reusable visual and language features while still using
+the Bellman target, temporal-difference error, and epsilon-greedy exploration
+from elementary Q-learning.
+
+## Q-network
+
+The model works in three stages. Read the diagram from left to right:
 
 ```mermaid
 flowchart LR
@@ -34,16 +53,16 @@ flowchart LR
         Direction["Facing direction"]
     end
 
-    subgraph Understanding["2. How the agent understands it"]
+    subgraph Understanding["2. How the agent represents the state"]
         Vision["CNN<br/>What can I see?"]
         Language["Tokenizer + GRU<br/>What was I asked to find?"]
         Orientation["Direction embedding<br/>Which way am I facing?"]
-        Fusion["Combine all information<br/>Shared understanding of the situation"]
+        Fusion["Combine all information<br/>Shared state representation"]
     end
 
-    subgraph Decisions["3. What the model produces"]
-        Actor["Actor<br/>Choose left, right, or forward"]
-        Critic["Critic<br/>Estimate how promising this situation is"]
+    subgraph Decision["3. What the Q-network produces"]
+        QHead["Q-value head<br/>left, right, forward"]
+        Greedy["Greedy action<br/>argmax Q(s,a)"]
     end
 
     Image --> Vision
@@ -52,13 +71,9 @@ flowchart LR
     Vision --> Fusion
     Language --> Fusion
     Orientation --> Fusion
-    Fusion --> Actor
-    Fusion --> Critic
+    Fusion --> QHead
+    QHead --> Greedy
 ```
-
-In plain language, the model first understands what it sees, what the mission
-asks for, and which way it is facing. It combines these three pieces of
-information once, then sends the shared result to two different output heads.
 
 | Information | Encoder | Encoded size |
 |---|---|---:|
@@ -67,219 +82,237 @@ information once, then sends the shared result to two different output heads.
 | Agent direction | Learned embedding | 16 |
 | Combined information | Linear layer + ReLU | 256 |
 
-The final 256-dimensional representation is shared by the actor and critic. The
-actor outputs three action logits, while the critic outputs one value estimate.
+The final layer produces one unrestricted real-valued estimate per action:
 
-The actor answers, “Which navigation action should be taken?” It produces three
-logits that define a categorical policy $\pi_\theta(a_t\mid s_t)$. During normal
-training and evaluation, actions are sampled from this distribution.
+```text
+Q(s, left), Q(s, right), Q(s, forward)
+```
 
-The critic answers, “How much discounted reward is expected from this state?” It
-estimates $V_\theta(s_t)$. The actor and critic are trained together, allowing the
-visual encoder, language encoder, direction embedding, and fusion layer to learn
-a shared VLN representation.
+These values are expected discounted returns, not probabilities. They do not
+use softmax, do not need to sum to one, and may be negative. During greedy action
+selection, the agent chooses
 
-## PPO algorithm
+$$
+a_t=\arg\max_a Q_{\mathrm{online}}(s_t,a).
+$$
 
-Proximal Policy Optimization (PPO) alternates between collecting experience and
-updating the Actor-Critic network:
+## Deep Q-Learning algorithm
 
-1. Collect an on-policy rollout using the current stochastic policy.
-2. Estimate advantages and return targets with Generalized Advantage Estimation
-   (GAE), using $\gamma=0.99$ and $\lambda=0.95$.
-3. Normalize the advantages.
-4. Shuffle the rollout and optimize the model for eight PPO epochs.
-5. Discard that rollout and collect fresh on-policy experience.
-6. Evaluate fixed validation seeds periodically and save the best checkpoint.
+Training alternates between environment interaction and replay-buffer updates:
+
+1. Select an action with an epsilon-greedy policy.
+2. Execute the action and store `(state, action, reward, next state, terminated, truncated)` in replay memory.
+3. During replay warm-up, collect transitions without changing the network.
+4. Randomly sample a minibatch from replay memory.
+5. Use the online network to predict the Q-value of each action that was taken.
+6. Use the frozen target network to calculate stable next-state values.
+7. Calculate the temporal-difference target and Huber loss.
+8. Update only the online network by gradient descent.
+9. Periodically copy the online-network parameters into the target network.
+10. Evaluate fixed validation seeds and save the best checkpoint.
+
+The replay buffer breaks correlations between consecutive observations and
+allows transitions to be reused. Therefore, the number of training sample
+presentations can be much larger than the number of unique environment
+transitions.
+
+### Online and target networks
+
+The two Q-networks have identical architectures but different roles:
+
+| Network | Purpose | Receives gradients? |
+|---|---|---:|
+| Online network | Select actions and predict current-state Q-values | Yes |
+| Target network | Calculate stable next-state targets | No |
+
+The target network is initialized from the online network and remains fixed
+between synchronization events:
+
+```text
+target network <- online network
+```
+
+This prevents the prediction and its learning target from changing together
+after every optimizer step.
+
+### Epsilon-greedy exploration
+
+During training, an action is selected according to
+
+```text
+with probability epsilon: choose a random action
+otherwise:                choose argmax Q_online(state, action)
+```
+
+Epsilon decreases linearly from `1.0` to `0.05`. Early behavior is mostly
+exploratory, while later behavior relies primarily on learned Q-values.
+Evaluation does not use epsilon; it always uses the greedy policy.
+
+### Reporting epochs
+
+The trainer prints **reporting epochs** to make the learning process visible.
+A reporting epoch is a monitoring window, not a complete pass through a fixed
+dataset. DQN has no conventional dataset epoch because it continuously collects
+new transitions and randomly samples replay memory.
+
+Each report shows:
+
+- environment transitions collected;
+- random and online-network actions;
+- replay-buffer occupancy;
+- optimizer updates;
+- replay samples presented to the network;
+- online and target network evaluations;
+- target-network synchronizations;
+- Q-values, TD targets, Huber loss, and gradient norms;
+- training and validation success measurements.
+
+## Q-learning target and loss
+
+For a sampled transition, the online-network prediction is
+
+$$
+Q_{\mathrm{online}}(s_t,a_t).
+$$
+
+The vanilla-DQN target is
+
+$$
+y_t = r_t + \gamma(1-d_t)
+\max_a Q_{\mathrm{target}}(s_{t+1},a),
+$$
+
+where $d_t$ is one for a true terminal state and zero otherwise. A pure time
+limit truncation still bootstraps from the valid final observation, so the mask
+uses `terminated` rather than `terminated or truncated`.
+
+The temporal-difference error is
+
+$$
+\delta_t=y_t-Q_{\mathrm{online}}(s_t,a_t).
+$$
+
+The online network minimizes the Huber loss
+
+$$
+L_{\mathrm{DQN}}=
+\operatorname{Huber}
+\left(Q_{\mathrm{online}}(s_t,a_t),y_t\right).
+$$
+
+Huber loss behaves like squared error near zero but is less sensitive to large
+initial TD errors. Gradients are clipped before each optimizer step.
+
+### Optional Double DQN
+
+Vanilla DQN uses the target network both to select and evaluate the next action.
+Double DQN reduces optimistic value estimates by separating those operations:
+
+$$
+a^*=\arg\max_a Q_{\mathrm{online}}(s_{t+1},a),
+$$
+
+$$
+y_t=r_t+\gamma(1-d_t)
+Q_{\mathrm{target}}(s_{t+1},a^*).
+$$
+
+Enable this behavior with `--double-dqn`. Vanilla DQN remains the default so it
+can serve as the elementary baseline.
+
+## Default training schedule
+
+| Quantity | Value |
+|---|---:|
+| Total environment transitions | 100,000 |
+| Replay-buffer capacity | 20,000 |
+| Replay warm-up | 5,000 transitions |
+| Minibatch size | 64 |
+| Training frequency | Every 4 environment steps |
+| Target synchronization | Every 1,000 environment steps |
+| Discount factor $\gamma$ | 0.99 |
+| Adam learning rate | $1\times10^{-4}$ |
+| Initial epsilon | 1.0 |
+| Final epsilon | 0.05 |
+| Epsilon decay duration | 50,000 steps |
+| Maximum gradient norm | 10.0 |
+| Validation interval | 5,000 steps |
+| Fixed validation episodes | 50 |
+
+With an update every four environment steps, a 100,000-step run performs at
+most approximately 23,750 optimizer updates after the 5,000-step warm-up. At 64
+samples per update, that is approximately 1.52 million replay-sample
+presentations. These are not 1.52 million unique transitions; replay memory
+intentionally reuses collected experience.
+
+## Training outputs and results
+
+The trainer writes its outputs under `runs/dqn_gotolocal` by default:
+
+| Output | Purpose |
+|---|---|
+| `training_metrics.csv` | Reporting-epoch training and validation measurements |
+| `checkpoint_last.pt` | Most recently validated training state |
+| `checkpoint_best.pt` | Checkpoint with the best fixed-seed validation score |
 
 The best checkpoint is selected primarily by validation success rate. Higher
 mean return and shorter mean episode length are used as tie-breakers.
 
-### Amount of data per epoch
+No completed DQN experiment is currently included in the default run directory,
+so this README does not claim DQN performance numbers. This avoids presenting
+the repository's earlier PPO measurements as DQN results. After training and
+evaluation, the generated CSV and JSON files are the source of truth.
 
-The completed experiment used the following data schedule:
+Useful measurements include:
 
-| Quantity | Value |
-|---|---:|
-| Environment transitions per rollout/PPO update | 512 |
-| Minibatch size | 64 |
-| Minibatches per PPO epoch | 8 |
-| PPO epochs per update | 8 |
-| Optimizer steps per update | 64 |
-| Number of PPO updates | 100 |
-| Unique environment transitions | 51,200 |
-| Total transition presentations during optimization | 409,600 |
+| Measurement | Interpretation |
+|---|---|
+| Mean episode return | Average reward from recently completed episodes |
+| Success rate | Fraction of episodes that reached the requested object |
+| Mean TD loss | Difference between online predictions and Bellman targets |
+| Mean selected Q-value | Predicted return for actions stored in replay |
+| Mean target value | Bellman target used for learning |
+| Mean absolute TD error | Average magnitude of the learning error |
+| Validation success rate | Greedy performance on fixed validation seeds |
 
-Here, a **PPO epoch** means one pass over the same 512-transition rollout. Each
-transition is therefore reused eight times before that rollout is discarded. The
-409,600 figure counts this reuse; only 51,200 unique environment interactions
-were collected.
+A falling TD loss alone does not prove that navigation improved. Validation
+success rate and return are the principal task-performance measurements.
 
-## Loss function
+## Evaluation
 
-For an action collected by the old policy, PPO first computes the probability
-ratio
-
-$$
-r_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}
-{\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)}
-=\exp\left(\log\pi_\theta(a_t\mid s_t)
--\log\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)\right).
-$$
-
-With normalized advantage $\hat A_t$ and clipping coefficient
-$\epsilon=0.2$, the minimized policy loss is
+`evaluate_dqn.py` loads `checkpoint_best.pt` and evaluates a greedy policy:
 
 $$
-L_{\mathrm{policy}}
-=-\mathbb{E}_t\left[
-\min\left(
-r_t(\theta)\hat A_t,
-\mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t
-\right)
-\right].
+a_t=\arg\max_a Q_{\mathrm{online}}(s_t,a).
 $$
 
-Clipping prevents a single update from changing the policy probability ratio
-too far away from 1. This generally makes policy updates more stable.
+Use evaluation seeds `1000` through `1099` for a 100-episode test set that is
+separate from the default validation seeds. The evaluator records each mission,
+return, episode length, success flag, mean selected Q-value, and action counts.
 
-The critic is trained against the GAE-based return target $\hat R_t$:
+The evaluation JSON contains two top-level sections:
 
-$$
-L_{\mathrm{value}}
-=\frac{1}{2}\mathbb{E}_t\left[
-\left(V_\theta(s_t)-\hat R_t\right)^2
-\right].
-$$
-
-The entropy of the categorical action distribution is
-
-$$
-H(\pi_\theta)
-=\mathbb{E}_t\left[-\sum_a
-\pi_\theta(a\mid s_t)\log\pi_\theta(a\mid s_t)
-\right].
-$$
-
-The implemented total loss is
-
-$$
-\boxed{
-L_{\mathrm{total}}
-=L_{\mathrm{policy}}
-+0.5L_{\mathrm{value}}
--0.01H(\pi_\theta)
-}
-$$
-
-The policy and value terms are minimized. Entropy is subtracted so that higher
-entropy is rewarded, encouraging exploration instead of making the policy
-deterministic too early. Gradients are clipped to a maximum norm of 0.5 before
-each Adam optimizer step. The learning rate is $2.5\times10^{-4}$.
-
-## Training results
-
-The following results come from the saved run in
-`runs/ppo_gotolocal_validation` with seed 42.
-
-| Measurement | Update 1 | Update 100 |
-|---|---:|---:|
-| Environment steps | 512 | 51,200 |
-| Mean completed-episode rollout return | 0.3970 | 0.2344 |
-| Rollout success rate | 58.33% | 27.27% |
-| Policy loss | -0.01701 | -0.02234 |
-| Value loss | 0.01151 | 0.00159 |
-| Entropy | 1.08817 | 0.58224 |
-| Total loss | -0.02214 | -0.02736 |
-
-![PPO training losses](images/plots/training_losses.png)
-
-![Training and validation rewards](images/plots/training_rewards.png)
-
-![Training and validation success rate](images/plots/training_success_rate.png)
-
-Actor and total losses are optimization objectives, not direct measures of task
-performance, so they are not expected to decrease monotonically. Rollout reward
-and success are also noisy because different missions are completed during each
-rollout. Fixed-seed validation is therefore used for checkpoint comparison.
-
-The best validation result occurred at update 10 (5,120 environment steps):
-
-| Validation metric | Result |
-|---|---:|
-| Episodes | 50 |
-| Mean return | 0.3905 |
-| Mean episode length | 40.50 |
-| Success rate | 60.00% |
-
-Although update 100 reached a higher validation mean return of 0.4464, its
-success rate was 58%. Update 10 remains the best checkpoint because validation
-success rate is the primary selection criterion.
-
-## Evaluation results
-
-`checkpoint_best.pt` was evaluated stochastically on 100 episodes with seeds
-1000–1099, which are separate from the validation seeds.
-
-| Evaluation metric | Result |
-|---|---:|
-| Checkpoint update | 10 |
-| Checkpoint environment steps | 5,120 |
-| Episodes | 100 |
-| Mean return | 0.3135 |
-| Mean episode length | 45.05 |
-| Success rate | 47.00% |
-
-![Evaluation episode rewards](images/plots/evaluation_rewards.png)
-
-![Evaluation success rate](images/plots/evaluation_success_rate.png)
-
-The difference between the 60% validation success rate and 47% evaluation
-success rate is possible because the policy is stochastic and the two sets use
-different environment seeds. More training seeds and repeated evaluations would
-be needed for a stronger estimate of generalization performance.
-
-## Best Result Cases
-
-Evaluation records every episode temporarily and keeps the three episodes with
-the highest return. Each frame displays the mission, selected action, immediate
-reward, cumulative return, and episode status. The animated previews below play
-automatically and loop inside the README.
-
-### Demo 1 — episode 51, return 0.958, seed 1050
-
-![VLN demo 1: episode 51](docs/demos/demo_1_episode_051.gif)
-
-[Open the original MP4](runs/ppo_gotolocal_3actions/videos/rank_01_episode_051_return_0.958_seed_1050.mp4)
-
-### Demo 2 — episode 42, return 0.944, seed 1041
-
-![VLN demo 2: episode 42](docs/demos/demo_2_episode_042.gif)
-
-[Open the original MP4](runs/ppo_gotolocal_3actions/videos/rank_02_episode_042_return_0.944_seed_1041.mp4)
-
-### Demo 3 — episode 2, return 0.930, seed 1001
-
-![VLN demo 3: episode 2](docs/demos/demo_3_episode_002.gif)
-
-[Open the original MP4](runs/ppo_gotolocal_3actions/videos/rank_03_episode_002_return_0.930_seed_1001.mp4)
-
-To reproduce an evaluation and save its three best episodes:
-
-```powershell
-python evaluate.py `
-  --checkpoint runs/ppo_gotolocal_validation/checkpoint_best.pt `
-  --episodes 100 `
-  --output runs/ppo_gotolocal_validation/evaluation_results.json `
-  --video-dir runs/ppo_gotolocal_validation/videos `
-  --video-episodes 3
+```text
+summary
+episodes
 ```
 
-<!-- > **Publishing note:** the diagrams are stored in `images/plots`, and the
-> animated GIF previews are stored in `docs/demos`, so both can be committed and
-> displayed in a remote repository. The original MP4 files remain under the
-> Git-ignored `runs/` directory and are available only in the current workspace
-> unless published separately. -->
+This makes episode returns and success flags available to plotting and
+comparison tools without parsing terminal output.
+
+## Best result cases
+
+The evaluator can retain the highest-return episodes and save them as MP4
+videos. Each frame displays:
+
+- the mission;
+- the selected action;
+- all predicted Q-values;
+- immediate reward and cumulative return;
+- episode status.
+
+The videos show the full grid for human interpretation. The Q-network itself
+still receives only the partial RGB observation, mission text, and direction.
 
 ## Installation and usage
 
@@ -289,35 +322,98 @@ Install the dependencies:
 python -m pip install -r requirements.txt
 ```
 
-Train the model:
+Check the environment, model, replay buffer, and update calculation:
 
 ```powershell
-python train.py `
-  --num-updates 100 `
-  --rollout-steps 512 `
-  --validation-episodes 50 `
-  --validation-interval 10 `
-  --output-dir runs/ppo_gotolocal_validation
+python -m scripts.test_env
+python -m scripts.test_q_model
+python -m scripts.test_replay_buffer
+python -m scripts.test_dqn_update
 ```
 
-Evaluate the model (Stochastic sampling):
+Run a short end-to-end debug experiment:
+
 ```powershell
-python evaluate.py `
-  --checkpoint runs/ppo_gotolocal_validation/checkpoint_best.pt `
+python -m training.train_dqn `
+  --debug `
+  --output-dir runs/dqn_debug
+```
+
+Train vanilla DQN:
+
+```powershell
+python -m training.train_dqn `
+  --total-steps 100000 `
+  --learning-rate 0.0001 `
+  --batch-size 64 `
+  --replay-capacity 20000 `
+  --learning-starts 5000 `
+  --train-frequency 4 `
+  --target-update-frequency 1000 `
+  --epsilon-decay-steps 50000 `
+  --validation-episodes 50 `
+  --validation-interval 5000 `
+  --output-dir runs/dqn_gotolocal
+```
+
+Train Double DQN in a separate output directory:
+
+```powershell
+python -m training.train_dqn `
+  --total-steps 100000 `
+  --double-dqn `
+  --output-dir runs/double_dqn_gotolocal
+```
+
+Evaluate the best vanilla-DQN checkpoint:
+
+```powershell
+python evaluate_dqn.py `
+  --checkpoint runs/dqn_gotolocal/checkpoint_best.pt `
   --episodes 100 `
-  --output runs/ppo_gotolocal_validation/evaluation_results.json `
-  --video-dir runs/ppo_gotolocal_3actions/videos `
+  --seed 1000 `
+  --output runs/dqn_gotolocal/evaluation_results.json
+```
+
+Evaluate and save the three highest-return videos:
+
+```powershell
+python evaluate_dqn.py `
+  --checkpoint runs/dqn_gotolocal/checkpoint_best.pt `
+  --episodes 100 `
+  --seed 1000 `
+  --output runs/dqn_gotolocal/evaluation_results.json `
+  --video-dir runs/dqn_gotolocal/videos `
   --video-episodes 3
 ```
 
-Generate the result diagrams:
+Print every evaluation action and its Q-values with `--show-steps`. Use this for
+short diagnostic evaluations because it produces substantial terminal output:
 
 ```powershell
-python -m scripts.plot_results `
-  --training-csv runs/ppo_gotolocal_validation/training_metrics.csv `
-  --evaluation-json runs/ppo_gotolocal_validation/evaluation_results.json `
-  --output-dir runs/ppo_gotolocal_validation/plots `
-  --smooth-window 10
+python evaluate_dqn.py `
+  --checkpoint runs/dqn_debug/checkpoint_best.pt `
+  --episodes 3 `
+  --show-steps
 ```
 
-See [running.md](running.md) for additional evaluation commands.
+## Project structure
+
+```text
+models/q_network.py              vision-language Q-network
+algorithms/replay_buffer.py      fixed-capacity experience replay
+algorithms/dqn.py                Bellman target and optimizer update
+training/train_dqn.py            collection, training, validation, reporting
+evaluate_dqn.py                  greedy evaluation and optional videos
+scripts/test_q_model.py          Q-network shape and gradient checks
+scripts/test_replay_buffer.py    replay storage and sampling checks
+scripts/test_dqn_update.py       online update and target-network checks
+```
+
+## Current limitation
+
+The environment is partially observable, but the current Q-network receives
+only the current observation. It does not remember earlier views. A future
+recurrent DQN or observation-history model could address this limitation. The
+present implementation is intentionally small so the core Deep Q-Learning
+process remains visible and easy to inspect.
