@@ -50,14 +50,20 @@ class ProcessCounters:
     total_greedy_actions: int = 0
     epoch_greedy_actions: int = 0
 
-    total_optimzer_updates: int = 0
+    total_optimizer_updates: int = 0
     epoch_optimizer_updates: int = 0
 
-    total_online_action_evaluation: int = 0
-    epoch_online_action_evaluation: int = 0
+    total_training_samples: int = 0
+    epoch_training_samples: int = 0
+
+    total_online_action_evaluations: int = 0
+    epoch_online_action_evaluations: int = 0
 
     total_online_training_evaluations: int = 0
     epoch_online_training_evaluations: int = 0
+
+    total_online_next_evaluations: int = 0
+    epoch_online_next_evaluations: int = 0
 
     total_target_evaluations: int = 0
     epoch_target_evaluations: int = 0
@@ -162,9 +168,9 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--validation-episodes",
+        "--validation-interval",
         type=int,
-        default=50,
+        default=5_000,
     )
 
     parser.add_argument(
@@ -1184,7 +1190,7 @@ def main():
                     history=history,
                     path=(
                         output_dir
-                        / "training_dqn_metrics.csv"
+                        / "training_metrics.csv"
                     ),
                 )
 
