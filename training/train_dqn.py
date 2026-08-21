@@ -25,6 +25,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
+import matplotlib
+
+# Use a non-interactive backend so plots work on headless machines.
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+
 from algorithms.dqn import (
     synchronize_target_network,
     update_dqn
@@ -186,6 +193,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--plot-smooth-window",
+        type=int,
+        default=10,
+        help="Number of reporting epochs in moving-average curves.",
+    )
+
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -245,6 +259,7 @@ def validate_args(args):
         "validation-episodes": args.validation_episodes,
         "validation-interval": args.validation_interval,
         "log-interval": args.log_interval,
+        "plot-smooth-window": args.plot_smooth_window,
 
     }
 
@@ -489,6 +504,299 @@ def save_training_history(history, path):
 
         writer.writeheader()
         writer.writerows(history)
+
+
+def history_series(history, key):
+    """Convert one history column to a floating-point NumPy array."""
+
+    return np.asarray(
+        [
+            float("nan")
+            if record.get(key) is None
+            else float(record[key])
+            for record in history
+        ],
+        dtype=np.float64,
+    )
+
+
+def moving_average(values, window):
+    """Calculate a trailing mean while ignoring missing values."""
+
+    values = np.asarray(values, dtype=np.float64)
+    smoothed = np.full_like(values, np.nan)
+
+    for index in range(len(values)):
+        start = max(0, index - window + 1)
+        selected = values[start:index + 1]
+        finite_values = selected[np.isfinite(selected)]
+
+        if len(finite_values) > 0:
+            smoothed[index] = np.mean(finite_values)
+
+    return smoothed
+
+
+def save_figure(figure, path):
+    """Save and close one Matplotlib figure."""
+
+    figure.tight_layout()
+    figure.savefig(
+        path,
+        dpi=160,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+
+def plot_training_history(
+    history,
+    output_dir,
+    smooth_window,
+):
+    """Draw DQN losses, rewards, success, and Q-value curves."""
+
+    if not history:
+        return
+
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    environment_steps = history_series(
+        history,
+        "environment_steps",
+    )
+    optimizer_updates = history_series(
+        history,
+        "optimizer_updates",
+    )
+
+    # TD loss and absolute TD error are training measurements. Validation
+    # evaluates task performance and therefore has no replay-based TD loss.
+    td_loss = history_series(history, "mean_td_loss")
+    absolute_td_error = history_series(
+        history,
+        "mean_absolute_td_error",
+    )
+    learning_mask = (
+        np.isfinite(td_loss)
+        & np.isfinite(optimizer_updates)
+        & (optimizer_updates > 0)
+    )
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+
+    if np.any(learning_mask):
+        axis.plot(
+            environment_steps[learning_mask],
+            td_loss[learning_mask],
+            color="tab:blue",
+            linewidth=2.0,
+            label="Mean Huber TD loss",
+        )
+        axis.plot(
+            environment_steps[learning_mask],
+            absolute_td_error[learning_mask],
+            color="tab:orange",
+            linewidth=1.8,
+            label="Mean absolute TD error",
+        )
+    else:
+        axis.text(
+            0.5,
+            0.5,
+            "No optimizer updates recorded yet",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+
+    axis.set_title("DQN Training Loss and TD Error")
+    axis.set_xlabel("Environment steps")
+    axis.set_ylabel("Value")
+    axis.grid(alpha=0.3)
+
+    if np.any(learning_mask):
+        axis.legend()
+
+    save_figure(
+        figure,
+        plots_dir / "training_td_loss.png",
+    )
+
+    training_returns = history_series(
+        history,
+        "mean_episode_return",
+    )
+    validation_returns = history_series(
+        history,
+        "validation_mean_return",
+    )
+    smoothed_returns = moving_average(
+        training_returns,
+        smooth_window,
+    )
+    validation_mask = np.isfinite(validation_returns)
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.plot(
+        environment_steps,
+        training_returns,
+        color="tab:blue",
+        alpha=0.3,
+        label="Training episode return",
+    )
+    axis.plot(
+        environment_steps,
+        smoothed_returns,
+        color="tab:blue",
+        linewidth=2.2,
+        label=(
+            f"Training moving average "
+            f"({smooth_window} reporting epochs)"
+        ),
+    )
+
+    if np.any(validation_mask):
+        axis.plot(
+            environment_steps[validation_mask],
+            validation_returns[validation_mask],
+            color="tab:orange",
+            marker="o",
+            linewidth=2.0,
+            label="Fixed-seed validation return",
+        )
+
+    axis.set_title("DQN Training and Validation Reward")
+    axis.set_xlabel("Environment steps")
+    axis.set_ylabel("Mean episode return")
+    axis.grid(alpha=0.3)
+    axis.legend()
+    save_figure(
+        figure,
+        plots_dir / "training_rewards.png",
+    )
+
+    training_success = (
+        history_series(history, "success_rate") * 100.0
+    )
+    validation_success = (
+        history_series(
+            history,
+            "validation_success_rate",
+        )
+        * 100.0
+    )
+    smoothed_success = moving_average(
+        training_success,
+        smooth_window,
+    )
+    validation_success_mask = np.isfinite(
+        validation_success
+    )
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.plot(
+        environment_steps,
+        training_success,
+        color="tab:green",
+        alpha=0.3,
+        label="Training success rate",
+    )
+    axis.plot(
+        environment_steps,
+        smoothed_success,
+        color="tab:green",
+        linewidth=2.2,
+        label=(
+            f"Training moving average "
+            f"({smooth_window} reporting epochs)"
+        ),
+    )
+
+    if np.any(validation_success_mask):
+        axis.plot(
+            environment_steps[validation_success_mask],
+            validation_success[validation_success_mask],
+            color="tab:red",
+            marker="o",
+            linewidth=2.0,
+            label="Fixed-seed validation success",
+        )
+
+    axis.set_title("DQN Training and Validation Success Rate")
+    axis.set_xlabel("Environment steps")
+    axis.set_ylabel("Success rate (%)")
+    axis.set_ylim(-2, 102)
+    axis.grid(alpha=0.3)
+    axis.legend()
+    save_figure(
+        figure,
+        plots_dir / "training_success_rate.png",
+    )
+
+    mean_q_values = history_series(
+        history,
+        "mean_q_value",
+    )
+    mean_target_values = history_series(
+        history,
+        "mean_target_value",
+    )
+    q_mask = (
+        np.isfinite(mean_q_values)
+        & np.isfinite(mean_target_values)
+        & np.isfinite(optimizer_updates)
+        & (optimizer_updates > 0)
+    )
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+
+    if np.any(q_mask):
+        axis.plot(
+            environment_steps[q_mask],
+            mean_q_values[q_mask],
+            color="tab:purple",
+            linewidth=2.0,
+            label="Mean selected online Q(s,a)",
+        )
+        axis.plot(
+            environment_steps[q_mask],
+            mean_target_values[q_mask],
+            color="tab:brown",
+            linewidth=2.0,
+            label="Mean Bellman target",
+        )
+    else:
+        axis.text(
+            0.5,
+            0.5,
+            "No Q-learning updates recorded yet",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+
+    axis.axhline(
+        0.0,
+        color="black",
+        linewidth=0.8,
+        alpha=0.5,
+    )
+    axis.set_title("DQN Online Q-Values and Bellman Targets")
+    axis.set_xlabel("Environment steps")
+    axis.set_ylabel("Value")
+    axis.grid(alpha=0.3)
+
+    if np.any(q_mask):
+        axis.legend()
+
+    save_figure(
+        figure,
+        plots_dir / "training_q_values.png",
+    )
+
+    print(f"[PLOTS] Updated training plots in: {plots_dir.resolve()}")
 
 def print_initialization(
     args,
@@ -1194,6 +1502,15 @@ def main():
                     ),
                 )
 
+                if should_validate:
+                    plot_training_history(
+                        history=history,
+                        output_dir=output_dir,
+                        smooth_window=(
+                            args.plot_smooth_window
+                        ),
+                    )
+
                 print_training_report(
                     counters=counters,
                     environment_step=environment_step,
@@ -1267,6 +1584,10 @@ def main():
         print(
             "Training metrics:            "
             f"{(output_dir / 'training_metrics.csv').resolve()}"
+        )
+        print(
+            "Training plots:              "
+            f"{(output_dir / 'plots').resolve()}"
         )
         print("=" * 72)
 
